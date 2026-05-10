@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --lp-gold: #A06E2E;
+    --lp-gold-light: #C8963E;
+    --lp-ink: #1A1208;
+    --lp-muted: #6B5E47;
+    --lp-surface: #FDFAF5;
+    --lp-border: #E8DFD0;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: var(--lp-surface);
+    color: var(--lp-ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
