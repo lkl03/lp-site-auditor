@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
+import { AuditProfileSchema, effectiveBrokerageName } from "@/lib/audit/profile";
 import { validateUrl, crawlSite } from "@/lib/audit/scanner";
-import { ALL_RULES } from "@/lib/audit/rules";
+import { BASE_RULES } from "@/lib/audit/rules";
+import { selectContextRules } from "@/lib/audit/context-rules";
 import { computeOverallScore, computeCategoryScores } from "@/lib/audit/scoring";
 import type { AuditResult, AuditContext, Finding } from "@/lib/audit/types";
 import { generateMarkdownReport, generateCsvReport } from "@/lib/audit/report";
@@ -9,23 +10,16 @@ import { randomUUID } from "crypto";
 
 export const maxDuration = 60;
 
-const RequestSchema = z.object({
-  url: z.string().min(1, "URL is required"),
-  expected: z
-    .object({
-      clientName: z.string().optional(),
-      brokerage: z.string().optional(),
-      market: z.string().optional(),
-      phone: z.string().optional(),
-      email: z.string().email().optional().or(z.literal("")),
-      pages: z.array(z.string()).optional(),
-      agents: z.array(z.string()).optional(),
-      neighborhoods: z.array(z.string()).optional(),
-    })
-    .optional()
-    .default({}),
-  format: z.enum(["json", "markdown", "csv"]).optional().default("json"),
-});
+/** Sort non-passing findings by severity for top recommendations. */
+function buildTopRecommendations(findings: Finding[]): Finding[] {
+  const ORDER: Record<string, number> = { CRITICAL: 0, REQUIRED: 1, VERIFY: 2, CONDITIONAL: 3, HUMAN_REVIEW: 4 };
+  const actionable = findings.filter(
+    (f) => f.status === "fail" || f.status === "warning"
+  );
+  return [...actionable].sort(
+    (a, b) => (ORDER[a.severity] ?? 9) - (ORDER[b.severity] ?? 9)
+  ).slice(0, 8);
+}
 
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -35,7 +29,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const parsed = RequestSchema.safeParse(body);
+  // Validate full AuditProfile
+  const parsed = AuditProfileSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Validation failed", details: parsed.error.flatten() },
@@ -43,7 +38,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { url: rawUrl, expected, format } = parsed.data;
+  const profile = parsed.data;
+  const { url: rawUrl, format } = profile;
 
   const urlCheck = validateUrl(rawUrl);
   if (!urlCheck.ok) {
@@ -66,15 +62,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Build context — populate expected from profile for backward-compat rules
   const ctx: AuditContext = {
     url: startUrl.toString(),
     pages,
-    expected: expected ?? {},
+    expected: {
+      clientName: profile.clientName,
+      brokerage: effectiveBrokerageName(profile),
+      market: profile.stateOrRegion,
+      phone: profile.clientMainPhone,
+      email: profile.clientMainEmail,
+      pages: profile.additionalPages.filter((p) => p !== "Other"),
+    },
+    profile,
     startUrl,
   };
 
+  // Run base rules + context rules
+  const allRules = [...BASE_RULES, ...selectContextRules(ctx)];
   const allFindings: Finding[] = [];
-  for (const rule of ALL_RULES) {
+  for (const rule of allRules) {
     try {
       const results = rule.evaluate(ctx);
       allFindings.push(...results);
@@ -88,6 +95,7 @@ export async function POST(req: NextRequest) {
 
   const overallScore = computeOverallScore(scoredFindings);
   const categoryScores = computeCategoryScores(allFindings);
+  const topRecommendations = buildTopRecommendations(scoredFindings);
 
   const succeeded = pages.filter((p) => !p.error && p.statusCode >= 200 && p.statusCode < 400);
   const failed = pages.filter((p) => p.error || p.statusCode === 0 || p.statusCode >= 400);
@@ -98,6 +106,7 @@ export async function POST(req: NextRequest) {
     scannedAt: new Date().toISOString(),
     overallScore,
     categoryScores,
+    topRecommendations,
     pagesScanned: pages.map((p) => ({
       url: p.url,
       title: p.title,
@@ -105,6 +114,13 @@ export async function POST(req: NextRequest) {
     })),
     findings: scoredFindings,
     humanReviewItems,
+    profile: {
+      siteType: profile.siteType,
+      clientName: profile.clientName,
+      brokerage: effectiveBrokerageName(profile),
+      stateOrRegion: profile.stateOrRegion,
+      mls: profile.mls === "Other" ? (profile.mlsOtherName ?? "Other") : profile.mls,
+    },
     metadata: {
       durationMs: Date.now() - startedAt,
       pagesAttempted: pages.length,

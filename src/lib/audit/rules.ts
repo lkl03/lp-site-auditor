@@ -198,96 +198,9 @@ export const ruleUniquePageTitles: AuditRule = {
   },
 };
 
-// ── META DESCRIPTIONS ────────────────────────────────────────────────────────
-export const ruleMetaDescriptionExists: AuditRule = {
-  id: "meta-description-exists",
-  category: "SEO",
-  title: "Meta description present",
-  severity: "REQUIRED",
-  evaluate(ctx) {
-    return allPages(ctx).map((p) =>
-      makeFinding({
-        id: "meta-description-exists",
-        category: "SEO",
-        title: "Meta description present",
-        severity: "REQUIRED",
-        status: p.metaDescription ? "pass" : "fail",
-        evidence: p.metaDescription
-          ? [`"${p.metaDescription.slice(0, 80)}..."`]
-          : ["No meta description found"],
-        recommendation: p.metaDescription ? "" : "Add a unique meta description to improve SEO and social sharing",
-        pageUrl: p.url,
-      })
-    );
-  },
-};
-
-export const ruleUniqueMetaDescriptions: AuditRule = {
-  id: "unique-meta-descriptions",
-  category: "SEO",
-  title: "Meta descriptions are unique",
-  severity: "REQUIRED",
-  evaluate(ctx) {
-    const good = allPages(ctx);
-    const descMap = new Map<string, string[]>();
-    for (const p of good) {
-      if (!p.metaDescription) continue;
-      const key = p.metaDescription.toLowerCase().trim();
-      if (!descMap.has(key)) descMap.set(key, []);
-      descMap.get(key)!.push(p.url);
-    }
-    const findings: Finding[] = [];
-    for (const [desc, urls] of descMap) {
-      if (urls.length > 1) {
-        findings.push(
-          makeFinding({
-            id: "unique-meta-descriptions",
-            category: "SEO",
-            title: "Duplicate meta description",
-            severity: "REQUIRED",
-            status: "fail",
-            evidence: [`Description "${desc.slice(0, 60)}..." appears on ${urls.length} pages`, ...urls],
-            recommendation: "Each page needs a unique meta description",
-          })
-        );
-      }
-    }
-    if (findings.length === 0) {
-      findings.push(makeFinding({
-        id: "unique-meta-descriptions",
-        category: "SEO",
-        title: "Meta descriptions are unique",
-        severity: "REQUIRED",
-        status: "pass",
-        evidence: ["All scanned pages have unique meta descriptions"],
-        recommendation: "",
-      }));
-    }
-    return findings;
-  },
-};
-
-// ── H1 ───────────────────────────────────────────────────────────────────────
-export const ruleH1Exists: AuditRule = {
-  id: "h1-exists",
-  category: "SEO",
-  title: "H1 exists on each page",
-  severity: "REQUIRED",
-  evaluate(ctx) {
-    return allPages(ctx).map((p) =>
-      makeFinding({
-        id: "h1-exists",
-        category: "SEO",
-        title: "H1 exists",
-        severity: "REQUIRED",
-        status: p.h1.length > 0 ? "pass" : "fail",
-        evidence: p.h1.length > 0 ? [`H1: "${p.h1[0]}"`] : ["No H1 heading found on page"],
-        recommendation: p.h1.length > 0 ? "" : "Add a clear H1 heading to this page",
-        pageUrl: p.url,
-      })
-    );
-  },
-};
+// Meta descriptions and generic H1 checks are intentionally removed.
+// This tool is a pre-QA orientation tool, not a generic SEO auditor.
+// Keep only checklist-relevant SEO items (page titles, unique titles, OG image, canonical).
 
 // ── FAVICON ──────────────────────────────────────────────────────────────────
 export const ruleFaviconExists: AuditRule = {
@@ -1196,15 +1109,13 @@ export const humanReviewRules: AuditRule[] = [
   },
 ];
 
-export const ALL_RULES: AuditRule[] = [
+/** Base rules that always run regardless of context. */
+export const BASE_RULES: AuditRule[] = [
   ruleUrlAccessible,
   ruleNo404Pages,
   rulePageTitleExists,
   rulePageTitleLength,
   ruleUniquePageTitles,
-  ruleMetaDescriptionExists,
-  ruleUniqueMetaDescriptions,
-  ruleH1Exists,
   ruleFaviconExists,
   ruleHeaderNavLinksExist,
   ruleFooterContactExists,
@@ -1230,3 +1141,6 @@ export const ALL_RULES: AuditRule[] = [
   ruleHomepageHeroExists,
   ...humanReviewRules,
 ];
+
+/** @deprecated Use BASE_RULES + selectContextRules(ctx) instead. */
+export const ALL_RULES = BASE_RULES;
