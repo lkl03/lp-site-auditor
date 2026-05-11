@@ -6,19 +6,26 @@ import { selectContextRules } from "@/lib/audit/context-rules";
 import { computeOverallScore, computeCategoryScores } from "@/lib/audit/scoring";
 import type { AuditResult, AuditContext, Finding } from "@/lib/audit/types";
 import { generateMarkdownReport, generateCsvReport } from "@/lib/audit/report";
+import { getExpectedRouteUrls } from "@/lib/audit/expected-routes";
 import { randomUUID } from "crypto";
 
 export const maxDuration = 60;
 
 /** Sort non-passing findings by severity for top recommendations. */
 function buildTopRecommendations(findings: Finding[]): Finding[] {
-  const ORDER: Record<string, number> = { CRITICAL: 0, REQUIRED: 1, VERIFY: 2, CONDITIONAL: 3, HUMAN_REVIEW: 4 };
+  const ORDER: Record<string, number> = {
+    CRITICAL: 0,
+    REQUIRED: 1,
+    VERIFY: 2,
+    CONDITIONAL: 3,
+    HUMAN_REVIEW: 4,
+  };
   const actionable = findings.filter(
     (f) => f.status === "fail" || f.status === "warning"
   );
-  return [...actionable].sort(
-    (a, b) => (ORDER[a.severity] ?? 9) - (ORDER[b.severity] ?? 9)
-  ).slice(0, 8);
+  return [...actionable]
+    .sort((a, b) => (ORDER[a.severity] ?? 9) - (ORDER[b.severity] ?? 9))
+    .slice(0, 8);
 }
 
 export async function POST(req: NextRequest) {
@@ -29,7 +36,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  // Validate full AuditProfile
   const parsed = AuditProfileSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -49,9 +55,12 @@ export async function POST(req: NextRequest) {
   const startUrl = urlCheck.url;
   const startedAt = Date.now();
 
+  // Build the list of expected URLs to proactively scan (based on profile)
+  const expectedUrls = getExpectedRouteUrls(profile, startUrl.origin);
+
   let pages;
   try {
-    pages = await crawlSite(startUrl);
+    pages = await crawlSite(startUrl, expectedUrls);
   } catch (err) {
     return NextResponse.json(
       {
@@ -62,7 +71,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Build context — populate expected from profile for backward-compat rules
+  // Build context
   const ctx: AuditContext = {
     url: startUrl.toString(),
     pages,
@@ -97,8 +106,12 @@ export async function POST(req: NextRequest) {
   const categoryScores = computeCategoryScores(allFindings);
   const topRecommendations = buildTopRecommendations(scoredFindings);
 
-  const succeeded = pages.filter((p) => !p.error && p.statusCode >= 200 && p.statusCode < 400);
-  const failed = pages.filter((p) => p.error || p.statusCode === 0 || p.statusCode >= 400);
+  const succeeded = pages.filter(
+    (p) => !p.error && p.statusCode >= 200 && p.statusCode < 400
+  );
+  const failed = pages.filter(
+    (p) => p.error || p.statusCode === 0 || p.statusCode >= 400
+  );
 
   const result: AuditResult & { markdownReport?: string; csvReport?: string } = {
     auditId: randomUUID(),
@@ -119,7 +132,10 @@ export async function POST(req: NextRequest) {
       clientName: profile.clientName,
       brokerage: effectiveBrokerageName(profile),
       stateOrRegion: profile.stateOrRegion,
-      mls: profile.mls === "Other" ? (profile.mlsOtherName ?? "Other") : profile.mls,
+      mls:
+        profile.mls === "Other"
+          ? (profile.mlsOtherName ?? "Other")
+          : profile.mls,
     },
     metadata: {
       durationMs: Date.now() - startedAt,

@@ -79,6 +79,14 @@ export interface PageData {
   hasVideo: boolean;
   hasHero: boolean;
   hasCTA: boolean;
+  /** True if the page text contains MLS/listing signals (used for /home-search check). */
+  hasListingSignals: boolean;
+  /** True if "lorem ipsum" placeholder text is detected on the page. */
+  hasLoremIpsum: boolean;
+  /** Words that appear consecutively more than once (e.g. "the the"). */
+  repeatedWords: string[];
+  /** True if any h1/h2/h3 element has empty text. */
+  hasEmptyHeadings: boolean;
   error?: string;
 }
 

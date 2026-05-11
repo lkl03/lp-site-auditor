@@ -473,23 +473,10 @@ export const SCORE_IMPACTS: Record<string, number> = {
   HUMAN_REVIEW: 0,
 };
 
-export const PRIORITY_PATHS = [
-  "/",
-  "/about",
-  "/team",
-  "/meet-the-team",
-  "/properties",
-  "/featured-properties",
-  "/past-transactions",
-  "/sold",
-  "/portfolio",
-  "/neighborhoods",
-  "/testimonials",
-  "/contact",
-  "/home-valuation",
-  "/blog",
-  "/press",
-  "/developments",
-  "/buyers-guide",
-  "/sellers-guide",
-];
+/**
+ * PRIORITY_PATHS is no longer used for crawling.
+ * Expected pages are now driven by AuditProfile via expected-routes.ts.
+ * Kept for backward compatibility in case other code references it.
+ * @deprecated Use getExpectedRouteUrls(profile, origin) from expected-routes.ts instead.
+ */
+export const PRIORITY_PATHS: string[] = [];

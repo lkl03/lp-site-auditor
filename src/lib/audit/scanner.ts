@@ -1,11 +1,11 @@
 import * as cheerio from "cheerio";
 import type { PageData } from "./types";
-import { PRIORITY_PATHS } from "./rubric";
 
-const MAX_PAGES = 10;
-const MAX_LINKS_PER_PAGE = 50;
-const PAGE_TIMEOUT_MS = 10_000;
-const MAX_BODY_BYTES = 3 * 1024 * 1024; // 3 MB
+const MAX_PAGES = 20;
+const CONCURRENCY = 4;        // parallel fetches
+const PAGE_TIMEOUT_MS = 8_000;
+const MAX_BODY_BYTES = 3 * 1024 * 1024;
+const TEXT_SAMPLE_LENGTH = 3_000; // ↑ from 500 so emails/phones deeper in page are captured
 
 const PLACEHOLDER_PATTERNS = [
   /placeholder/i,
@@ -43,7 +43,7 @@ const DISCLAIMER_KEYWORDS = [
   "multiple listing",
 ];
 
-const PROHIBITED_TERMS = ["off-market", "off market"];
+const PROHIBITED_TERMS = ["off-market", "off market", "pocket listing"];
 
 const LICENSE_PATTERNS = [
   /\bDRE\s*#?\s*\d{7,10}\b/i,
@@ -51,6 +51,14 @@ const LICENSE_PATTERNS = [
   /\bLicense\s*#?\s*\d{5,12}\b/i,
   /\bLic\.?\s*#?\s*\d{5,12}\b/i,
   /\bBRE\s*#?\s*\d{7,10}\b/i,
+  /\bTREC\s*#?\s*\d{5,12}\b/i,
+];
+
+// MLS listing signals for /home-search detection
+export const MLS_SIGNALS = [
+  "listing", "listings", "homes for sale", "search homes", "property search",
+  "idx", "mls", "price", "beds", "baths", "sqft", "square feet",
+  "search results", "properties found", "active listings",
 ];
 
 function isPrivateIP(hostname: string): boolean {
@@ -66,10 +74,7 @@ function isPrivateIP(hostname: string): boolean {
     /^fc00:/i,
     /^fe80:/i,
     /^0\.0\.0\.0$/,
-    /^169\.254\./,
-    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
     /^metadata\.google\.internal$/i,
-    /^169\.254\.169\.254$/,
   ];
   return privateRanges.some((r) => r.test(hostname));
 }
@@ -90,7 +95,10 @@ export function validateUrl(raw: string): { ok: true; url: URL } | { ok: false; 
   return { ok: true, url };
 }
 
-async function fetchPage(url: string, signal: AbortSignal): Promise<{ html: string; statusCode: number }> {
+async function fetchPage(
+  url: string,
+  signal: AbortSignal
+): Promise<{ html: string; statusCode: number }> {
   const res = await fetch(url, {
     signal,
     redirect: "follow",
@@ -135,14 +143,26 @@ async function fetchPage(url: string, signal: AbortSignal): Promise<{ html: stri
   return { html, statusCode: res.status };
 }
 
-function parsePage(html: string, pageUrl: string): Omit<PageData, "url" | "statusCode" | "error"> {
+function parsePage(
+  html: string,
+  pageUrl: string
+): Omit<PageData, "url" | "statusCode" | "error"> {
   const $ = cheerio.load(html);
 
   const title = $("title").first().text().trim();
   const metaDescription = $('meta[name="description"]').attr("content")?.trim() ?? "";
-  const h1 = $("h1").map((_, el) => $(el).text().trim()).get().filter(Boolean);
-  const h2 = $("h2").map((_, el) => $(el).text().trim()).get().filter(Boolean);
-  const h3 = $("h3").map((_, el) => $(el).text().trim()).get().filter(Boolean);
+  const h1 = $("h1")
+    .map((_, el) => $(el).text().trim())
+    .get()
+    .filter(Boolean);
+  const h2 = $("h2")
+    .map((_, el) => $(el).text().trim())
+    .get()
+    .filter(Boolean);
+  const h3 = $("h3")
+    .map((_, el) => $(el).text().trim())
+    .get()
+    .filter(Boolean);
   const favicon =
     $('link[rel="icon"]').attr("href") ||
     $('link[rel="shortcut icon"]').attr("href") ||
@@ -156,21 +176,19 @@ function parsePage(html: string, pageUrl: string): Omit<PageData, "url" | "statu
 
   const allLinks: string[] = [];
   const externalLinks: string[] = [];
-  $("a[href]")
-    .slice(0, MAX_LINKS_PER_PAGE)
-    .each((_, el) => {
-      const href = $(el).attr("href")?.trim() ?? "";
-      if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
-      try {
-        const resolved = new URL(href, base).toString();
-        const u = new URL(resolved);
-        if (u.hostname === base.hostname) {
-          allLinks.push(resolved);
-        } else {
-          externalLinks.push(resolved);
-        }
-      } catch {}
-    });
+  $("a[href]").each((_, el) => {
+    const href = $(el).attr("href")?.trim() ?? "";
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+    try {
+      const resolved = new URL(href, base).toString();
+      const u = new URL(resolved);
+      if (u.hostname === base.hostname) {
+        allLinks.push(resolved);
+      } else {
+        externalLinks.push(resolved);
+      }
+    } catch {}
+  });
 
   const buttons = $("button, [role='button'], a.btn, .cta-button")
     .map((_, el) => $(el).text().trim())
@@ -199,31 +217,37 @@ function parsePage(html: string, pageUrl: string): Omit<PageData, "url" | "statu
   const forms: PageData["forms"] = [];
   $("form").each((_, el) => {
     const inputs = $(el).find("input, textarea, select").length;
-    const hasSubmit =
-      !!$(el).find('button[type="submit"], input[type="submit"], button:not([type="button"])').length;
+    const hasSubmit = !!$(el).find(
+      'button[type="submit"], input[type="submit"], button:not([type="button"])'
+    ).length;
     const labels = $(el).find("label").length;
     forms.push({ inputs, hasSubmit, labels });
   });
 
   const bodyText = $("body").text();
+  const lowerBodyText = bodyText.toLowerCase();
 
+  // ── Email extraction (case-insensitive collection) ────────────────────────
   const emails: string[] = [];
-  $('a[href^="mailto:"]').each((_, el) => {
+  $('a[href^="mailto:"], a[href^="MAILTO:"]').each((_, el) => {
     const href = $(el).attr("href") ?? "";
-    const email = href.replace("mailto:", "").split("?")[0].trim();
-    if (email) emails.push(email);
+    const email = href.replace(/^mailto:/i, "").split("?")[0].trim().toLowerCase();
+    if (email && !emails.includes(email)) emails.push(email);
   });
-  const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  // Also search visible text — regex is case-insensitive via flag
+  const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/gi;
   const textEmails = bodyText.match(emailPattern) ?? [];
   for (const e of textEmails) {
-    if (!emails.includes(e)) emails.push(e);
+    const normalized = e.toLowerCase();
+    if (!emails.includes(normalized)) emails.push(normalized);
   }
 
+  // ── Phone extraction ──────────────────────────────────────────────────────
   const phones: string[] = [];
   $('a[href^="tel:"]').each((_, el) => {
     const href = $(el).attr("href") ?? "";
     const phone = href.replace("tel:", "").trim();
-    if (phone) phones.push(phone);
+    if (phone && !phones.includes(phone)) phones.push(phone);
   });
   const phonePattern = /\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/g;
   const textPhones = bodyText.match(phonePattern) ?? [];
@@ -242,9 +266,12 @@ function parsePage(html: string, pageUrl: string): Omit<PageData, "url" | "statu
     } catch {}
   });
 
-  const lowerText = bodyText.toLowerCase();
-  const disclaimers: string[] = DISCLAIMER_KEYWORDS.filter((kw) => lowerText.includes(kw));
-  const prohibitedTerms: string[] = PROHIBITED_TERMS.filter((t) => lowerText.includes(t));
+  const disclaimers: string[] = DISCLAIMER_KEYWORDS.filter((kw) =>
+    lowerBodyText.includes(kw)
+  );
+  const prohibitedTerms: string[] = PROHIBITED_TERMS.filter((t) =>
+    lowerBodyText.includes(t)
+  );
 
   const licenseNumbers: string[] = [];
   for (const pattern of LICENSE_PATTERNS) {
@@ -252,17 +279,28 @@ function parsePage(html: string, pageUrl: string): Omit<PageData, "url" | "statu
     if (matches) licenseNumbers.push(...matches);
   }
 
-  const inlineFixedWidths = $('[style]')
+  const inlineFixedWidths = $("[style]")
     .toArray()
     .some((el) => /width\s*:\s*\d+px/i.test($(el).attr("style") ?? ""));
 
-  const hasVideo = !!$("video, iframe[src*='youtube'], iframe[src*='vimeo']").length;
-  const hasHero = !!$(".hero, .opener, [class*='hero'], [class*='opener'], [id*='hero']").length;
-  const hasCTA = !!$(
-    "a.cta, button.cta, .cta-button, [class*='cta'], a[class*='btn']"
+  const hasVideo = !!$(
+    "video, iframe[src*='youtube'], iframe[src*='vimeo'], iframe[src*='youtube-nocookie']"
   ).length;
+  const hasHero = !!$(
+    ".hero, .opener, [class*='hero'], [class*='opener'], [id*='hero']"
+  ).length;
+  const hasCTA = !!$("a.cta, button.cta, .cta-button, [class*='cta'], a[class*='btn']").length;
 
-  const textSample = bodyText.replace(/\s+/g, " ").trim().slice(0, 500);
+  // MLS listing signals on this page
+  const hasListingSignals = MLS_SIGNALS.some((s) => lowerBodyText.includes(s));
+
+  // Text quality signals
+  const hasLoremIpsum = lowerBodyText.includes("lorem ipsum");
+  const repeatedWords = detectRepeatedWords(bodyText);
+  const hasEmptyHeadings =
+    h1.some((t) => !t.trim()) || h2.some((t) => !t.trim()) || h3.some((t) => !t.trim());
+
+  const textSample = bodyText.replace(/\s+/g, " ").trim().slice(0, TEXT_SAMPLE_LENGTH);
 
   return {
     title,
@@ -292,132 +330,160 @@ function parsePage(html: string, pageUrl: string): Omit<PageData, "url" | "statu
     hasVideo,
     hasHero,
     hasCTA,
+    hasListingSignals,
+    hasLoremIpsum,
+    repeatedWords,
+    hasEmptyHeadings,
   };
 }
 
-function collectPriorityUrls(startUrl: URL, discovered: string[]): string[] {
-  const origin = startUrl.origin;
-  const priority = PRIORITY_PATHS.map((p) => `${origin}${p}`);
-  const allUrls = [...new Set([startUrl.toString(), ...priority, ...discovered])];
-  return allUrls.slice(0, MAX_PAGES);
+/** Detect obviously repeated words like "the the" or "and and". */
+function detectRepeatedWords(text: string): string[] {
+  const words = text.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+  const repeated: string[] = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    if (
+      words[i] === words[i + 1] &&
+      words[i].length > 2 && // ignore short words like "a a"
+      !repeated.includes(words[i])
+    ) {
+      repeated.push(words[i]);
+    }
+  }
+  return repeated;
 }
 
-export async function crawlSite(startUrl: URL): Promise<PageData[]> {
-  const visited = new Set<string>();
-  const queue: string[] = [startUrl.toString()];
-  const pages: PageData[] = [];
-  const discovered: string[] = [];
+/** Build an empty page data record for error cases. */
+function makeErrorPage(url: string, error: string): PageData {
+  return {
+    url,
+    statusCode: 0,
+    error,
+    title: "",
+    metaDescription: "",
+    h1: [],
+    h2: [],
+    h3: [],
+    links: [],
+    externalLinks: [],
+    buttons: [],
+    images: [],
+    forms: [],
+    emails: [],
+    phones: [],
+    socialLinks: [],
+    disclaimers: [],
+    prohibitedTerms: [],
+    placeholderImages: [],
+    favicon: "",
+    canonical: "",
+    ogImage: "",
+    viewportMeta: false,
+    textSample: "",
+    inlineFixedWidths: false,
+    imagesWithoutSrcset: [],
+    licenseNumbers: [],
+    hasVideo: false,
+    hasHero: false,
+    hasCTA: false,
+    hasListingSignals: false,
+    hasLoremIpsum: false,
+    repeatedWords: [],
+    hasEmptyHeadings: false,
+  };
+}
 
-  // Phase 1: fetch root and discover links
-  const rootController = new AbortController();
-  const rootTimeout = setTimeout(() => rootController.abort(), PAGE_TIMEOUT_MS);
+/** Fetch and parse a single page. Always resolves (errors become error PageData). */
+async function fetchAndParsePage(url: string): Promise<PageData> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PAGE_TIMEOUT_MS);
   try {
-    const { html, statusCode } = await fetchPage(startUrl.toString(), rootController.signal);
-    clearTimeout(rootTimeout);
-    visited.add(startUrl.toString());
-
-    const parsed = parsePage(html, startUrl.toString());
-    pages.push({ url: startUrl.toString(), statusCode, ...parsed });
-
-    for (const link of parsed.links) {
-      try {
-        const u = new URL(link);
-        if (u.hostname === startUrl.hostname) discovered.push(link);
-      } catch {}
-    }
+    const { html, statusCode } = await fetchPage(url, controller.signal);
+    clearTimeout(timeout);
+    const parsed = parsePage(html, url);
+    return { url, statusCode, ...parsed };
   } catch (err) {
-    clearTimeout(rootTimeout);
-    pages.push({
-      url: startUrl.toString(),
-      statusCode: 0,
-      error: err instanceof Error ? err.message : "Fetch failed",
-      title: "",
-      metaDescription: "",
-      h1: [],
-      h2: [],
-      h3: [],
-      links: [],
-      externalLinks: [],
-      buttons: [],
-      images: [],
-      forms: [],
-      emails: [],
-      phones: [],
-      socialLinks: [],
-      disclaimers: [],
-      prohibitedTerms: [],
-      placeholderImages: [],
-      favicon: "",
-      canonical: "",
-      ogImage: "",
-      viewportMeta: false,
-      textSample: "",
-      inlineFixedWidths: false,
-      imagesWithoutSrcset: [],
-      licenseNumbers: [],
-      hasVideo: false,
-      hasHero: false,
-      hasCTA: false,
-    });
+    clearTimeout(timeout);
+    return makeErrorPage(url, err instanceof Error ? err.message : "Fetch failed");
+  }
+}
+
+/**
+ * Fetch a list of URLs in parallel batches of CONCURRENCY.
+ * Respects maxTotal limit.
+ */
+async function fetchBatch(
+  urls: string[],
+  visited: Set<string>,
+  pages: PageData[],
+  maxTotal: number
+): Promise<void> {
+  const pending = urls.filter((u) => !visited.has(u));
+  for (let i = 0; i < pending.length && pages.length < maxTotal; i += CONCURRENCY) {
+    const batch = pending
+      .slice(i, i + CONCURRENCY)
+      .filter((u) => !visited.has(u))
+      .slice(0, maxTotal - pages.length);
+
+    if (batch.length === 0) break;
+
+    // Mark as visited before fetching (prevents duplicates in concurrent batches)
+    for (const u of batch) visited.add(u);
+
+    const results = await Promise.all(batch.map((u) => fetchAndParsePage(u)));
+    pages.push(...results);
+  }
+}
+
+/**
+ * Crawl a site starting at startUrl.
+ *
+ * @param startUrl - The root URL to begin crawling.
+ * @param expectedUrls - URLs that should always be attempted (from AuditProfile).
+ *   These are fetched with priority before discovered links.
+ */
+export async function crawlSite(
+  startUrl: URL,
+  expectedUrls: string[] = []
+): Promise<PageData[]> {
+  const visited = new Set<string>();
+  const pages: PageData[] = [];
+
+  // ── Phase 1: Fetch root page ──────────────────────────────────────────────
+  visited.add(startUrl.toString());
+  const rootPage = await fetchAndParsePage(startUrl.toString());
+  pages.push(rootPage);
+
+  if (rootPage.error || rootPage.statusCode === 0) {
+    // Root failed — don't attempt further pages
     return pages;
   }
 
-  // Phase 2: crawl priority + discovered pages up to limit
-  const urlsToVisit = collectPriorityUrls(startUrl, discovered);
-  for (const rawUrl of urlsToVisit) {
-    if (pages.length >= MAX_PAGES) break;
-    let url: string;
-    try {
-      url = new URL(rawUrl).toString();
-    } catch {
-      continue;
-    }
-    if (visited.has(url)) continue;
-    visited.add(url);
+  // Collect internal links from root
+  const discovered = rootPage.links
+    .filter((l) => {
+      try {
+        return new URL(l).hostname === startUrl.hostname;
+      } catch {
+        return false;
+      }
+    })
+    .slice(0, 40); // cap discovery to avoid huge queues
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PAGE_TIMEOUT_MS);
+  // ── Phase 2: Fetch expected URLs (from AuditProfile) ─────────────────────
+  // Deduplicate and normalize expected URLs
+  const expectedNormalized = [...new Set(expectedUrls)].filter((u) => {
     try {
-      const { html, statusCode } = await fetchPage(url, controller.signal);
-      clearTimeout(timeout);
-      const parsed = parsePage(html, url);
-      pages.push({ url, statusCode, ...parsed });
-    } catch (err) {
-      clearTimeout(timeout);
-      pages.push({
-        url,
-        statusCode: 0,
-        error: err instanceof Error ? err.message : "Fetch failed",
-        title: "",
-        metaDescription: "",
-        h1: [],
-        h2: [],
-        h3: [],
-        links: [],
-        externalLinks: [],
-        buttons: [],
-        images: [],
-        forms: [],
-        emails: [],
-        phones: [],
-        socialLinks: [],
-        disclaimers: [],
-        prohibitedTerms: [],
-        placeholderImages: [],
-        favicon: "",
-        canonical: "",
-        ogImage: "",
-        viewportMeta: false,
-        textSample: "",
-        inlineFixedWidths: false,
-        imagesWithoutSrcset: [],
-        licenseNumbers: [],
-        hasVideo: false,
-        hasHero: false,
-        hasCTA: false,
-      });
+      return new URL(u).hostname === startUrl.hostname;
+    } catch {
+      return false;
     }
-  }
+  });
+
+  await fetchBatch(expectedNormalized, visited, pages, MAX_PAGES);
+
+  // ── Phase 3: Fill remaining slots from discovered links ───────────────────
+  await fetchBatch(discovered, visited, pages, MAX_PAGES);
 
   return pages;
 }

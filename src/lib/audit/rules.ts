@@ -922,6 +922,87 @@ export const ruleExpectedNeighborhoodsFound: AuditRule = {
   },
 };
 
+// ── HOME SEARCH / MLS VISIBLE ────────────────────────────────────────────────
+/**
+ * Checks that /home-search exists and contains MLS listing signals.
+ * Always scanned because LP always builds a home-search/IDX page.
+ *
+ * Pass:    /home-search returns 200 AND has listing signals in HTML
+ * Warning: /home-search returns 200 but no listing signals (likely JS-rendered IDX)
+ * Fail:    /home-search returns 404 or could not be fetched
+ */
+export const ruleHomeSearchMlsVisible: AuditRule = {
+  id: "home-search-mls-visible",
+  category: "Property Pages",
+  title: "Home search / MLS listings visible",
+  severity: "REQUIRED",
+  evaluate(ctx) {
+    const homeSearchPage = ctx.pages.find((p) =>
+      p.url.toLowerCase().includes("/home-search")
+    );
+
+    if (!homeSearchPage || homeSearchPage.error || homeSearchPage.statusCode === 0) {
+      return [makeFinding({
+        id: "home-search-mls-visible",
+        category: "Property Pages",
+        title: "Home search page not scanned",
+        severity: "REQUIRED",
+        status: "fail",
+        evidence: homeSearchPage?.error
+          ? [`/home-search fetch failed: ${homeSearchPage.error}`]
+          : ["No /home-search page found — may not have been crawled yet"],
+        recommendation:
+          "Ensure /home-search exists and is publicly accessible. LP sites always include a home search / IDX page. Verify the URL returns 200 on staging.",
+      })];
+    }
+
+    if (homeSearchPage.statusCode === 404 || homeSearchPage.statusCode >= 400) {
+      return [makeFinding({
+        id: "home-search-mls-visible",
+        category: "Property Pages",
+        title: "Home search page returns 404",
+        severity: "REQUIRED",
+        status: "fail",
+        evidence: [`/home-search returned HTTP ${homeSearchPage.statusCode}`],
+        recommendation:
+          "The /home-search page returned a 4xx error. Verify the IDX/home search page exists and is published. Check for typos in the URL slug.",
+        pageUrl: homeSearchPage.url,
+      })];
+    }
+
+    if (!homeSearchPage.hasListingSignals) {
+      return [makeFinding({
+        id: "home-search-mls-visible",
+        category: "Property Pages",
+        title: "Home search loaded but no MLS signals detected",
+        severity: "REQUIRED",
+        status: "warning",
+        evidence: [
+          `/home-search returned HTTP ${homeSearchPage.statusCode} — page loaded`,
+          "No IDX/listing keywords detected in HTML — content is likely JS-rendered",
+        ],
+        recommendation:
+          "Visit /home-search on the staging site and verify IDX listings are displaying. If listings load via JavaScript (React/Vue/IDX widget), this tool cannot detect them — a manual check is required.",
+        pageUrl: homeSearchPage.url,
+      })];
+    }
+
+    return [makeFinding({
+      id: "home-search-mls-visible",
+      category: "Property Pages",
+      title: "Home search / MLS listings visible",
+      severity: "REQUIRED",
+      status: "pass",
+      evidence: [
+        `/home-search returned HTTP ${homeSearchPage.statusCode}`,
+        "IDX/listing signals detected in page HTML",
+      ],
+      recommendation: "",
+      pageUrl: homeSearchPage.url,
+    })];
+  },
+};
+
 // ── HOMEPAGE HERO ─────────────────────────────────────────────────────────────
 export const ruleHomepageHeroExists: AuditRule = {
   id: "homepage-hero-exists",
@@ -1138,6 +1219,7 @@ export const BASE_RULES: AuditRule[] = [
   ruleExpectedPagesFound,
   ruleExpectedAgentsFound,
   ruleExpectedNeighborhoodsFound,
+  ruleHomeSearchMlsVisible,
   ruleHomepageHeroExists,
   ...humanReviewRules,
 ];
