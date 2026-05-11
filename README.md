@@ -1,71 +1,169 @@
-# LP Draft QA Scanner
+# LP Site Auditor
 
-An internal pre-QA web tool for Luxury Presence Website Builders. Paste a staging URL and get an automated orientation report — scores, findings, evidence, and suggested corrections — before submitting a draft to the QA team.
+**Internal pre-QA tool for Luxury Presence Website Builders.**
 
-> **This tool does not replace QA team review.** It is a pre-flight assistant to help catch obvious issues before handoff. All findings require human confirmation.
+Paste a staging URL, fill in site context (brokerage, state, MLS, page types), and get a contextual report of common passback risks — before submitting to QA.
 
----
-
-## What it does
-
-- Crawls up to 10 pages of a staging site using `fetch` + Cheerio (server-side, no browser required)
-- Runs 30+ deterministic QA rules across 18 categories
-- Returns an overall score (0–100), per-category scores, and a full findings list
-- Flags items that cannot be verified automatically (human-review section)
-- Exports the report as Markdown, JSON, or CSV
-
-## What it does NOT do
-
-- Does not submit forms or interact with JavaScript-driven elements
-- Does not take visual screenshots (Playwright is a planned future enhancement)
-- Does not replace the QA team's review process
-- Cannot verify color accuracy, font correctness, lead routing, or image quality/relevance
-- Cannot confirm that all onboarding hub requests were implemented
+> ⚠️ This tool does NOT replace the QA team review. It is a pre-flight orientation tool only.
 
 ---
 
-## Running locally
+## What It Does
 
-```bash
-# Install dependencies
-npm install
+The auditor crawls your staging site (up to 20 pages), runs a set of context-aware rules, and returns:
 
-# Start dev server
-npm run dev
-```
+- **Critical & Required Fixes** — things that will likely fail QA (missing pages, broken links, off-market terms)
+- **Recommended Checks** — things to verify manually (IDX disclaimer, license numbers)
+- **Human Review Checklist** — visual items that cannot be automated (headshot crop, section spacing, mobile overflow)
+- **Full Scan Details** — all findings, filterable by category
 
-Open [http://localhost:3000](http://localhost:3000).
-
-### Running tests
-
-```bash
-npm test
-```
-
-### Building for production
-
-```bash
-npm run build
-npm start
-```
+No score is shown. The goal is a clear list of things to fix, not a number.
 
 ---
 
-## Deploying to Vercel
+## LP-Specific Route Mapping
 
-1. Push the repo to GitHub
-2. Import the project at [vercel.com/new](https://vercel.com/new)
-3. Framework preset: **Next.js** (auto-detected)
-4. No environment variables required for MVP
-5. Click **Deploy**
+The scanner uses LP-standard URL paths when determining if expected pages exist:
 
-> **Timeout note:** Vercel Hobby has a 10s function limit. The API route sets `maxDuration = 60` which requires a Pro/Team plan. On Hobby, scans will time out after 10s — enough for 1–2 pages. Upgrade to Vercel Pro or set `maxDuration` to 10 for Hobby.
+| Page Type | Expected LP URL(s) |
+|---|---|
+| Home Search / IDX | `/home-search` |
+| Portfolio (combined) | `/properties` |
+| For Sale (separate mode) | `/properties/sale` |
+| Sold / Past Transactions | `/properties/sold` |
+| Agent About/Bio | `/about`, `/about-me`, `/bio` |
+| Team Page | `/team`, `/our-team`, `/meet-the-team` |
+| Buyers Guide | `/buyers`, `/buyers-guide` |
+| Sellers Guide | `/sellers`, `/sellers-guide` |
+| Blog | `/blog` |
+| Videos / Vlog | `/vlog` |
+| Mortgage Calculator | `/mortgage-calculator` |
+| Press / Media | `/press`, `/press-and-media` |
+| Home Valuation | `/home-valuation` |
+| Testimonials | `/testimonials` |
+| Neighborhoods | `/neighborhoods` |
+| Contact | `/contact`, `/contact-us` |
+| Developments | `/developments`, `/new-development` |
+
+**Alias logic:** if ANY alias returns HTTP 200, the page is considered found. For example, if the client's buyers page is at `/buyers-guide`, the audit will still pass — it doesn't require `/buyers`.
 
 ---
 
-## Environment variables
+## Agent vs Team Behavior
 
-None required for MVP. See `.env.example` for a template.
+The `siteType` field controls which rules are active. These rule sets never mix:
+
+**Agent sites** (`siteType: "agent"`) check for:
+- About/bio page (`/about`, `/about-me`, `/bio`)
+- Agent headshot presence (human review)
+- Agent bio content personalization (human review)
+- Agent contact form or CTA
+- Property/listing section on homepage
+
+**Team sites** (`siteType: "team"`) check for:
+- Team page (`/team`, `/our-team`, `/meet-the-team`)
+- Team member content detectable
+- Team/About link in navigation
+- All team headshots present (human review)
+- Team contact form or CTA
+
+A team site will never generate "agent about page" findings. An agent site will never generate "team page" findings. This was a common false positive in the original tool.
+
+---
+
+## Property Page Modes
+
+| Mode | What Gets Checked |
+|---|---|
+| `portfolio` | Single `/properties` page for both active + sold |
+| `separate-sale-sold` | Separate `/properties/sale` and `/properties/sold` pages |
+
+In `separate-sale-sold` mode, both pages must exist. A human review item is also generated to verify the sold page is sorted by price descending (LP standard).
+
+---
+
+## Home Search / IDX Check
+
+The `/home-search` page is always scanned. The rule returns:
+
+| Result | Condition |
+|---|---|
+| ✅ Pass | `/home-search` returns 200 + IDX listing keywords detected in HTML |
+| ⚠️ Warning | `/home-search` returns 200 but no listing keywords (likely JS-rendered IDX) |
+| ❌ Fail | `/home-search` returns 404, 5xx, or cannot be fetched |
+
+The "warning" case is common because LP IDX widgets (Showcase, Spark) render listings via JavaScript. The scanner can only read static HTML — it will not see JS-rendered content. A manual visit is always required to verify IDX functionality.
+
+---
+
+## Visual QA (Human Review Only)
+
+Visual checks are always presented as human-review items. No automated visual analysis is performed. This is an intentional limitation:
+
+- **Vercel serverless constraint:** Playwright/Chromium cannot run in the Vercel edge runtime
+- **Scope:** This tool is a pre-flight helper, not a visual regression suite
+
+The following visual items are always flagged for manual review:
+1. Headshot crop (desktop + mobile)
+2. Section padding and spacing consistency
+3. Mobile horizontal overflow
+4. CTA button spacing and tap targets
+5. Image crops on desktop and mobile
+
+---
+
+## Text Quality Checks
+
+The scanner detects two text quality issues without any external APIs:
+
+- **Lorem Ipsum** (`CRITICAL`): any page containing "lorem ipsum" fails with a critical finding
+- **Repeated consecutive words** (`VERIFY`): detects patterns like "the the" or "and and" which indicate copy-paste errors
+
+These supplement the Grammarly/WordTune manual check (human review item).
+
+---
+
+## Email Matching
+
+All email addresses collected during scanning are normalized to lowercase. Profile email comparisons are also lowercase. This prevents false negatives where the site renders `AGENT@DOMAIN.COM` but the profile stores `agent@domain.com`.
+
+---
+
+## Brokerage-Specific Rules
+
+Rules are activated based on the `brokerage` field:
+
+| Brokerage | Additional Automated Check |
+|---|---|
+| Compass | Scans for unreplaced template text ("client name", "[Client", "{{client") |
+| Sotheby's International Realty | Checks for "independently owned and operated" disclaimer |
+| All | Human review item for brokerage-specific brand compliance |
+
+Brokerage compliance documentation (logo usage, color codes, required footer text) is referenced from the LP Launch Bible and Coda compliance docs. The tool points to the relevant guide per brokerage.
+
+---
+
+## State / MLS Compliance
+
+State-specific compliance rules are loaded from `src/lib/compliance/compliance-rules.ts`. These include:
+
+- DRE/license number display requirements (CA, TX, FL, NY, etc.)
+- State-specific IDX disclaimer text
+- Team vs agent MLS attribution rules
+
+A human review item is always generated for MLS-specific compliance, because IDX disclaimer requirements vary by MLS board and cannot be fully automated.
+
+---
+
+## Score Removal Rationale
+
+The tool previously showed an overall score (0–100). This was removed because:
+
+1. **It created false confidence.** A score of 80 felt "good" even when critical items were still open.
+2. **It was misleading for human-review-heavy sites.** Sites with many human-review items scored the same as a perfect automated run, because HUMAN_REVIEW items carry no score impact.
+3. **WBs optimized for the score, not for the checklist.** The goal is zero issues, not a high number.
+
+The new layout shows counts (critical / required / verify / human review), which communicate urgency without false precision.
 
 ---
 
@@ -73,73 +171,62 @@ None required for MVP. See `.env.example` for a template.
 
 ```
 src/
-├── app/
-│   ├── layout.tsx          Root layout
-│   ├── page.tsx            Main page (form + results)
-│   ├── globals.css         Global styles (Tailwind v4)
-│   └── api/audit/
-│       └── route.ts        POST /api/audit
-├── components/
-│   ├── AuditForm.tsx       URL + context input form
-│   ├── AuditResults.tsx    Score, category grid, findings, export
-│   ├── FindingCard.tsx     Expandable finding card
-│   └── ScoreBadge.tsx      Score ring + severity/status badges
-└── lib/audit/
-    ├── types.ts            All TypeScript types
-    ├── rubric.ts           QA principles, score weights, priority paths
-    ├── scanner.ts          URL validator + Cheerio crawler
-    ├── rules.ts            All audit rule implementations
-    ├── scoring.ts          Score calculation
-    ├── report.ts           Markdown + CSV report generation
-    └── audit.test.ts       Vitest unit tests
+  app/
+    api/audit/route.ts      — POST endpoint, orchestrates crawl + rules + scoring
+    page.tsx                — Main UI, form → results, localStorage history
+  components/
+    AuditForm.tsx           — Profile input form (Zod-validated)
+    AuditResults.tsx        — Results display (Fix Before QA layout)
+    FindingCard.tsx         — Individual finding card component
+    ScoreBadge.tsx          — Severity/status badges (no score display)
+  lib/
+    audit/
+      types.ts              — All TypeScript types (AuditContext, PageData, Finding, etc.)
+      profile.ts            — AuditProfile Zod schema, effectiveBrokerageName, effectiveMlsName
+      scanner.ts            — Crawler (20 pages max, 4 concurrent, 8s timeout per page)
+      rules.ts              — BASE_RULES (always run)
+      context-rules.ts      — Context-aware rules (activated by profile)
+      expected-routes.ts    — LP route mapping (URL aliases per page type)
+      rubric.ts             — Scoring weights and rule metadata
+      scoring.ts            — Overall + category score computation
+      report.ts             — Markdown + CSV report generation
+      constants.ts          — State → MLS dropdown mapping
+    compliance/
+      compliance-rules.ts   — Static state/brokerage compliance rule data
 ```
 
+### Scanner Behavior
+
+- **Phase 1:** Fetch root URL
+- **Phase 2:** Fetch expected URLs from `getExpectedRouteUrls(profile, origin)` — these are the LP-specific routes derived from the profile (all aliases are attempted in parallel)
+- **Phase 3:** Fill remaining slots (up to 20 total) from links discovered on the root page
+
+Parallel fetching uses `Promise.all` with `CONCURRENCY = 4`. Max page timeout is 8 seconds. Total pages capped at 20 to stay within Vercel's 60-second function limit.
+
 ---
 
-## How to add a new rule
+## Development
 
-All rules live in `src/lib/audit/rules.ts`. Implement `AuditRule` and add it to `ALL_RULES`:
-
-```typescript
-export const myRule: AuditRule = {
-  id: "my-rule-id",
-  category: "SEO",            // must match AuditCategory
-  title: "My rule title",
-  severity: "REQUIRED",       // CRITICAL | REQUIRED | VERIFY | CONDITIONAL | HUMAN_REVIEW
-  evaluate(ctx) {
-    // ctx.pages[] — all scanned PageData
-    // ctx.expected — user-provided context
-    return [/* Finding objects */];
-  },
-};
-
-// At bottom of rules.ts:
-export const ALL_RULES = [...existingRules, myRule];
+```bash
+npm install
+npm run dev          # local dev (Turbopack)
+npm test             # Vitest unit tests
+npm run build        # production build
+npm run lint         # ESLint
+npm run typecheck    # tsc --noEmit
 ```
 
-### Severity → score impact
-
-| Severity | Impact per fail |
-|---|---|
-| CRITICAL | −10 |
-| REQUIRED | −5 |
-| VERIFY | −2 |
-| CONDITIONAL | −3 |
-| HUMAN_REVIEW | 0 (human review section) |
+Tests are in `src/lib/audit/audit.test.ts`. Run after any rules change.
 
 ---
 
-## Known limitations
+## Deployment
 
-- **JS-rendered content:** Cheerio parses static HTML. Nav/footer rendered via JS may appear missing.
-- **Password-protected staging:** Will fail with a network error.
-- **Visual checks:** Color, spacing, font — require Playwright (planned).
-- **Lead routing:** Cannot verify without submitting a real test lead.
-- **Scan coverage:** Bounded to 10 pages. JS-only routes may not be discovered.
+Deployed on Vercel. Push to `main` triggers automatic deployment.
 
----
+```bash
+gh pr create --title "..." --body "..."
+# merge → Vercel auto-deploys
+```
 
-## Built by
-
-LP Website Builder Team — Luxury Presence  
-Automated URL scanner rebuilt from the manual QA checklist by the WB TL team.
+The project is at: **lp-site-auditor-clean** (private repo, Luxury Presence internal).

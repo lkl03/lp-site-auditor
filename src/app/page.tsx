@@ -159,15 +159,17 @@ export default function Home() {
                   className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 border-b border-gray-50 last:border-0 transition-colors"
                 >
                   <span
-                    className={`text-sm font-bold tabular-nums ${
-                      item.overallScore >= 85
-                        ? "text-emerald-600"
-                        : item.overallScore >= 70
-                        ? "text-amber-600"
-                        : "text-red-600"
+                    className={`text-xs font-semibold tabular-nums px-1.5 py-0.5 rounded ${
+                      item.result.findings.filter((f) => f.status === "fail" || f.status === "warning").length === 0
+                        ? "bg-emerald-50 text-emerald-700"
+                        : item.result.findings.filter((f) => f.severity === "CRITICAL" && (f.status === "fail" || f.status === "warning")).length > 0
+                        ? "bg-red-50 text-red-700"
+                        : "bg-amber-50 text-amber-700"
                     }`}
                   >
-                    {item.overallScore}
+                    {item.result.findings.filter((f) => f.status === "fail" || f.status === "warning").length === 0
+                      ? "✓ OK"
+                      : `${item.result.findings.filter((f) => f.status === "fail" || f.status === "warning").length} issues`}
                   </span>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-semibold text-gray-700 truncate">{item.clientName}</p>

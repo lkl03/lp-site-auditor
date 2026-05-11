@@ -7,6 +7,7 @@ import {
   ruleExpectedPagesFound,
   ruleContactInfoConsistency,
   rulePageTitleLength,
+  ruleHomeSearchMlsVisible,
   BASE_RULES,
 } from "./rules";
 import {
@@ -17,6 +18,7 @@ import {
   getAdditionalPageRules,
   getBrokerageRules,
   getClientNameRule,
+  getTextQualityRules,
 } from "./context-rules";
 import { AuditProfileSchema, effectiveBrokerageName, effectiveMlsName } from "./profile";
 import { getMlsForState } from "./constants";
@@ -56,6 +58,10 @@ function makePage(overrides: Partial<PageData> = {}): PageData {
     hasVideo: false,
     hasHero: true,
     hasCTA: true,
+    hasListingSignals: false,
+    hasLoremIpsum: false,
+    repeatedWords: [],
+    hasEmptyHeadings: false,
     ...overrides,
   };
 }
@@ -422,11 +428,11 @@ describe("getPropertyPageRules", () => {
     expect(ids).not.toContain("portfolio-page-exists");
   });
 
-  it("portfolio-page-exists passes when /portfolio page found", () => {
+  it("portfolio-page-exists passes when /properties page found (LP route)", () => {
     const ctx = makeCtx({
       pages: [
         makePage({ url: "https://example.com/" }),
-        makePage({ url: "https://example.com/portfolio" }),
+        makePage({ url: "https://example.com/properties" }),
       ],
     });
     const rule = getPropertyPageRules("portfolio").find((r) => r.id === "portfolio-page-exists")!;
@@ -443,7 +449,19 @@ describe("getPropertyPageRules", () => {
     expect(findings.some((f) => f.status === "fail")).toBe(true);
   });
 
-  it("properties-for-sale-page passes when /for-sale page found", () => {
+  it("properties-for-sale-page passes when /properties/sale page found (LP route)", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ url: "https://example.com/" }),
+        makePage({ url: "https://example.com/properties/sale" }),
+      ],
+    });
+    const rule = getPropertyPageRules("separate-sale-sold").find((r) => r.id === "properties-for-sale-page")!;
+    const findings = rule.evaluate(ctx);
+    expect(findings.some((f) => f.status === "pass")).toBe(true);
+  });
+
+  it("properties-for-sale-page also passes for legacy /for-sale alias", () => {
     const ctx = makeCtx({
       pages: [
         makePage({ url: "https://example.com/" }),
@@ -455,7 +473,19 @@ describe("getPropertyPageRules", () => {
     expect(findings.some((f) => f.status === "pass")).toBe(true);
   });
 
-  it("sold-past-transactions-page passes when /sold page found", () => {
+  it("sold-past-transactions-page passes when /properties/sold page found (LP route)", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ url: "https://example.com/" }),
+        makePage({ url: "https://example.com/properties/sold" }),
+      ],
+    });
+    const rule = getPropertyPageRules("separate-sale-sold").find((r) => r.id === "sold-past-transactions-page")!;
+    const findings = rule.evaluate(ctx);
+    expect(findings.some((f) => f.status === "pass")).toBe(true);
+  });
+
+  it("sold-past-transactions-page also passes for legacy /sold alias", () => {
     const ctx = makeCtx({
       pages: [
         makePage({ url: "https://example.com/" }),
@@ -1073,5 +1103,153 @@ describe("rulePageTitleLength", () => {
     });
     const findings = rulePageTitleLength.evaluate(ctx);
     expect(findings.some((f) => f.status === "warning")).toBe(true);
+  });
+});
+
+// ── Home Search / MLS Visible Rule ───────────────────────────────────────────
+
+describe("ruleHomeSearchMlsVisible", () => {
+  it("passes when /home-search returns 200 with listing signals", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ url: "https://example.com/" }),
+        makePage({
+          url: "https://example.com/home-search",
+          statusCode: 200,
+          hasListingSignals: true,
+        }),
+      ],
+    });
+    const findings = ruleHomeSearchMlsVisible.evaluate(ctx);
+    expect(findings.some((f) => f.status === "pass")).toBe(true);
+  });
+
+  it("warns when /home-search returns 200 but no listing signals (JS-rendered IDX)", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ url: "https://example.com/" }),
+        makePage({
+          url: "https://example.com/home-search",
+          statusCode: 200,
+          hasListingSignals: false,
+        }),
+      ],
+    });
+    const findings = ruleHomeSearchMlsVisible.evaluate(ctx);
+    expect(findings.some((f) => f.status === "warning")).toBe(true);
+  });
+
+  it("fails when /home-search returns 404", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ url: "https://example.com/" }),
+        makePage({
+          url: "https://example.com/home-search",
+          statusCode: 404,
+          hasListingSignals: false,
+        }),
+      ],
+    });
+    const findings = ruleHomeSearchMlsVisible.evaluate(ctx);
+    expect(findings.some((f) => f.status === "fail")).toBe(true);
+  });
+
+  it("fails when /home-search was not scanned at all", () => {
+    const ctx = makeCtx({
+      pages: [makePage({ url: "https://example.com/" })],
+    });
+    const findings = ruleHomeSearchMlsVisible.evaluate(ctx);
+    expect(findings.some((f) => f.status === "fail")).toBe(true);
+  });
+
+  it("is included in BASE_RULES", () => {
+    const ids = BASE_RULES.map((r) => r.id);
+    expect(ids).toContain("home-search-mls-visible");
+  });
+});
+
+// ── Email Case-Insensitivity ──────────────────────────────────────────────────
+
+describe("email case-insensitivity", () => {
+  it("ruleExpectedEmailFound matches regardless of case in stored emails", () => {
+    // Emails stored as lowercase (scanner normalizes), compared against profile email
+    const ctx = makeCtx({
+      expected: { email: "Agent@Example.com" },
+      pages: [makePage({ emails: ["agent@example.com"] })],
+    });
+    // The rule lowercases both sides — should match
+    const rule = BASE_RULES.find((r) => r.id === "expected-email-found")!;
+    const findings = rule.evaluate(ctx);
+    expect(findings.some((f) => f.status === "pass")).toBe(true);
+  });
+
+  it("ruleExpectedEmailFound fails when email truly absent", () => {
+    const ctx = makeCtx({
+      expected: { email: "missing@example.com" },
+      pages: [makePage({ emails: ["other@example.com"] })],
+    });
+    const rule = BASE_RULES.find((r) => r.id === "expected-email-found")!;
+    const findings = rule.evaluate(ctx);
+    expect(findings.some((f) => f.status === "fail")).toBe(true);
+  });
+});
+
+// ── Text Quality Rules ────────────────────────────────────────────────────────
+
+describe("getTextQualityRules", () => {
+  it("lorem ipsum rule fails when hasLoremIpsum is true on any page", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ url: "https://example.com/" }),
+        makePage({ url: "https://example.com/about", hasLoremIpsum: true }),
+      ],
+    });
+    const rules = getTextQualityRules();
+    const loremRule = rules.find((r) => r.id === "text-quality-lorem-ipsum")!;
+    const findings = loremRule.evaluate(ctx);
+    expect(findings.some((f) => f.status === "fail")).toBe(true);
+    expect(findings.some((f) => f.severity === "CRITICAL")).toBe(true);
+  });
+
+  it("lorem ipsum rule passes when no pages have Lorem Ipsum", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ hasLoremIpsum: false }),
+      ],
+    });
+    const rules = getTextQualityRules();
+    const loremRule = rules.find((r) => r.id === "text-quality-lorem-ipsum")!;
+    const findings = loremRule.evaluate(ctx);
+    expect(findings.every((f) => f.status === "pass")).toBe(true);
+  });
+
+  it("repeated words rule warns when repeatedWords detected across pages", () => {
+    const ctx = makeCtx({
+      pages: [
+        makePage({ repeatedWords: ["the", "and"] }),
+      ],
+    });
+    const rules = getTextQualityRules();
+    const repeatRule = rules.find((r) => r.id === "text-quality-repeated-words")!;
+    const findings = repeatRule.evaluate(ctx);
+    expect(findings.some((f) => f.status === "warning")).toBe(true);
+  });
+
+  it("repeated words rule passes when no repeated words detected", () => {
+    const ctx = makeCtx({
+      pages: [makePage({ repeatedWords: [] })],
+    });
+    const rules = getTextQualityRules();
+    const repeatRule = rules.find((r) => r.id === "text-quality-repeated-words")!;
+    const findings = repeatRule.evaluate(ctx);
+    expect(findings.every((f) => f.status === "pass")).toBe(true);
+  });
+
+  it("text quality rules are included via selectContextRules", () => {
+    const ctx = makeCtx();
+    const rules = selectContextRules(ctx);
+    const ids = rules.map((r) => r.id);
+    expect(ids).toContain("text-quality-lorem-ipsum");
+    expect(ids).toContain("text-quality-repeated-words");
   });
 });
