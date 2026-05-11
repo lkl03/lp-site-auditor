@@ -7,10 +7,11 @@ import type { Finding } from "@/lib/audit/types";
 
 interface Props {
   finding: Finding;
+  defaultOpen?: boolean;
 }
 
-export function FindingCard({ finding }: Props) {
-  const [open, setOpen] = useState(finding.status === "fail" || finding.status === "warning");
+export function FindingCard({ finding, defaultOpen }: Props) {
+  const [open, setOpen] = useState(defaultOpen ?? (finding.status === "fail" || finding.status === "warning"));
 
   const borderColor =
     finding.status === "fail"
@@ -34,6 +35,11 @@ export function FindingCard({ finding }: Props) {
             <SeverityBadge severity={finding.severity} />
             <StatusBadge status={finding.status} />
             <span className="text-xs text-gray-400">{finding.category}</span>
+            {finding.contextLabel && (
+              <span className="text-xs rounded-full bg-indigo-50 border border-indigo-100 text-indigo-600 px-1.5 py-0.5">
+                {finding.contextLabel}
+              </span>
+            )}
           </div>
           <p className="font-medium text-gray-900 text-sm leading-snug">{finding.title}</p>
           {finding.pageUrl && (

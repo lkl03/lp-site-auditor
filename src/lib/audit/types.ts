@@ -1,3 +1,5 @@
+import type { AuditProfile } from "./profile";
+
 export type Severity = "CRITICAL" | "REQUIRED" | "VERIFY" | "CONDITIONAL" | "HUMAN_REVIEW";
 export type FindingStatus = "pass" | "fail" | "warning" | "needs_review" | "not_applicable";
 
@@ -31,6 +33,10 @@ export interface Finding {
   evidence: string[];
   recommendation: string;
   pageUrl?: string;
+  /** If true, this check was activated because of the user's context selection. */
+  contextTriggered?: boolean;
+  /** Short label to display explaining why this check ran. e.g. "Agent-site check" */
+  contextLabel?: string;
 }
 
 export interface CategoryScore {
@@ -76,6 +82,7 @@ export interface PageData {
   error?: string;
 }
 
+/** Deprecated: Use AuditProfile fields directly. Kept for backward-compat with existing rules. */
 export interface ExpectedContext {
   clientName?: string;
   brokerage?: string;
@@ -90,7 +97,10 @@ export interface ExpectedContext {
 export interface AuditContext {
   url: string;
   pages: PageData[];
+  /** Derived from profile for backward compatibility with existing rules. */
   expected: ExpectedContext;
+  /** Full user-provided context. New rules should read from here. */
+  profile: AuditProfile;
   startUrl: URL;
 }
 
@@ -111,6 +121,9 @@ export interface AuditResult {
   pagesScanned: { url: string; title: string; statusCode: number }[];
   findings: Finding[];
   humanReviewItems: Finding[];
+  /** Top-priority findings to fix before QA, sorted by severity. */
+  topRecommendations: Finding[];
+  profile: Pick<AuditProfile, "siteType" | "clientName" | "brokerage" | "stateOrRegion" | "mls">;
   metadata: {
     durationMs: number;
     pagesAttempted: number;
@@ -119,7 +132,5 @@ export interface AuditResult {
   };
 }
 
-export interface AuditRequest {
-  url: string;
-  expected?: ExpectedContext;
-}
+/** Shape sent from the form to the API. */
+export type AuditRequest = AuditProfile;

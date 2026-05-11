@@ -1,7 +1,17 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Download, Copy, Check, RefreshCw, ExternalLink } from "lucide-react";
+import {
+  Download,
+  Copy,
+  Check,
+  RefreshCw,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  Eye,
+} from "lucide-react";
 import { ScoreBadge } from "./ScoreBadge";
 import { FindingCard } from "./FindingCard";
 import type { AuditResult, AuditCategory, Finding } from "@/lib/audit/types";
@@ -12,40 +22,34 @@ interface Props {
 }
 
 function scoreLabel(score: number) {
-  if (score >= 85) return "Excellent";
-  if (score >= 70) return "Good";
-  if (score >= 50) return "Needs Work";
+  if (score >= 85) return "Looking Good";
+  if (score >= 70) return "Needs Attention";
+  if (score >= 50) return "Significant Issues";
   return "Critical Issues";
 }
 
 function scoreDescription(score: number) {
-  if (score >= 85) return "Site looks ready for QA handoff — review human items below.";
-  if (score >= 70) return "A few items need attention before QA handoff.";
-  if (score >= 50) return "Several issues found — address before submitting to QA.";
-  return "Critical issues detected. Fix these before QA handoff.";
+  if (score >= 85) return "Site looks mostly ready for QA handoff — review human items and complete final checks.";
+  if (score >= 70) return "Several items need to be fixed before QA handoff.";
+  if (score >= 50) return "Multiple issues detected. Address all Critical and Required items before submitting.";
+  return "Critical issues found. Do not submit to QA until these are resolved.";
 }
-
-type FilterMode = "all" | "issues" | "review";
 
 export function AuditResults({ result, onReset }: Props) {
   const [copiedMd, setCopiedMd] = useState(false);
-  const [filter, setFilter] = useState<FilterMode>("all");
+  const [showFullDetails, setShowFullDetails] = useState(false);
   const [activeCategory, setActiveCategory] = useState<AuditCategory | "all">("all");
 
-  const criticals = result.findings.filter((f) => f.severity === "CRITICAL" && f.status === "fail");
-  const required = result.findings.filter((f) => f.severity === "REQUIRED" && f.status === "fail");
-  const warnings = result.findings.filter((f) => f.status === "warning" || (f.severity === "VERIFY" && f.status === "fail"));
-  const passing = result.findings.filter((f) => f.status === "pass");
+  const criticals = result.findings.filter((f) => f.severity === "CRITICAL" && (f.status === "fail" || f.status === "warning"));
+  const required = result.findings.filter((f) => f.severity === "REQUIRED" && (f.status === "fail" || f.status === "warning"));
+  const verifyWarnings = result.findings.filter((f) => (f.severity === "VERIFY" || f.severity === "CONDITIONAL") && (f.status === "fail" || f.status === "warning"));
 
+  const fullIssues = result.findings.filter((f) => f.status !== "pass");
   const allFindings = [...result.findings, ...result.humanReviewItems];
   const categories = [...new Set(allFindings.map((f) => f.category))] as AuditCategory[];
 
-  function getVisibleFindings(): Finding[] {
-    let pool: Finding[] = [];
-    if (filter === "all") pool = [...result.findings, ...result.humanReviewItems];
-    else if (filter === "issues") pool = result.findings.filter((f) => f.status !== "pass");
-    else if (filter === "review") pool = result.humanReviewItems;
-
+  function getFullDetailsFindings(): Finding[] {
+    let pool = [...result.findings, ...result.humanReviewItems];
     if (activeCategory !== "all") pool = pool.filter((f) => f.category === activeCategory);
     return pool;
   }
@@ -75,28 +79,36 @@ export function AuditResults({ result, onReset }: Props) {
     a.click();
   }
 
-  const visible = getVisibleFindings();
+  const { profile } = result;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Disclaimer */}
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        <strong>Pre-QA guidance only.</strong> This automated scan does not replace QA team review.
-        It is an orientation tool to help catch obvious issues before handoff. Always complete a full
-        manual review before submitting to QA.
+        <strong>Pre-QA orientation only.</strong> This automated scan does not replace QA team review.
+        It is a pre-flight tool to help catch avoidable issues before handoff.
+        Always complete a full manual review before submitting to QA.
       </div>
 
-      {/* Score overview */}
+      {/* Score + profile context */}
       <div className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
         <div className="flex flex-col sm:flex-row items-center gap-6">
           <ScoreBadge score={result.overallScore} size="lg" />
           <div className="flex-1 text-center sm:text-left">
             <h2 className="text-xl font-bold text-gray-900">{scoreLabel(result.overallScore)}</h2>
             <p className="text-sm text-gray-500 mt-1">{scoreDescription(result.overallScore)}</p>
-            <p className="text-xs text-gray-400 mt-2">
-              Orientation score — not an official QA approval
-            </p>
-            <div className="flex flex-wrap gap-2 mt-3">
+            <p className="text-xs text-gray-400 mt-1">Orientation score — not an official QA approval</p>
+
+            {/* Context tags */}
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              <Tag label={profile.siteType === "agent" ? "Agent Site" : "Team Site"} color="blue" />
+              <Tag label={profile.clientName} color="gray" />
+              <Tag label={profile.brokerage} color="gray" />
+              <Tag label={profile.stateOrRegion} color="gray" />
+              {profile.mls && <Tag label={profile.mls} color="gray" />}
+            </div>
+
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
               <a
                 href={result.url}
                 target="_blank"
@@ -104,14 +116,12 @@ export function AuditResults({ result, onReset }: Props) {
                 className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
               >
                 <ExternalLink size={11} />
-                {result.url.slice(0, 60)}{result.url.length > 60 ? "…" : ""}
+                {result.url.slice(0, 55)}{result.url.length > 55 ? "…" : ""}
               </a>
-            </div>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
               <span className="text-xs text-gray-400">
-                {result.metadata.pagesSucceeded}/{result.metadata.pagesAttempted} pages scanned ·{" "}
+                · {result.metadata.pagesSucceeded}/{result.metadata.pagesAttempted} pages ·{" "}
                 {(result.metadata.durationMs / 1000).toFixed(1)}s ·{" "}
-                {new Date(result.scannedAt).toLocaleString()}
+                {new Date(result.scannedAt).toLocaleTimeString()}
               </span>
             </div>
           </div>
@@ -121,143 +131,162 @@ export function AuditResults({ result, onReset }: Props) {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 border-t border-gray-50 pt-5">
           <SummaryCount label="Critical" count={criticals.length} color="text-red-600 bg-red-50" />
           <SummaryCount label="Required Fixes" count={required.length} color="text-orange-600 bg-orange-50" />
-          <SummaryCount label="Warnings" count={warnings.length} color="text-amber-600 bg-amber-50" />
-          <SummaryCount label="Human Review" count={result.humanReviewItems.length} color="text-purple-600 bg-purple-50" />
+          <SummaryCount label="Verify" count={verifyWarnings.length} color="text-amber-600 bg-amber-50" />
+          <SummaryCount
+            label="Human Review"
+            count={result.humanReviewItems.length}
+            color="text-purple-600 bg-purple-50"
+            note="doesn't affect score"
+          />
         </div>
       </div>
 
-      {/* Category score grid */}
-      {result.categoryScores.length > 0 && (
+      {/* TOP RECOMMENDATIONS */}
+      {result.topRecommendations.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Category Breakdown
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {result.categoryScores.map((cs) => (
-              <button
-                key={cs.category}
-                onClick={() => {
-                  setActiveCategory((c) => (c === cs.category ? "all" : cs.category));
-                  setFilter("all");
-                }}
-                className={`rounded-lg border p-3 text-left hover:shadow-sm transition-all ${
-                  activeCategory === cs.category
-                    ? "border-amber-400 bg-amber-50"
-                    : "border-gray-100 bg-white"
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-gray-700 leading-tight">
-                    {cs.category}
-                  </span>
-                  <span
-                    className={`text-sm font-bold tabular-nums ${
-                      cs.score >= 85
-                        ? "text-emerald-600"
-                        : cs.score >= 70
-                        ? "text-amber-600"
-                        : "text-red-600"
-                    }`}
-                  >
-                    {cs.score}
-                  </span>
-                </div>
-                <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${
-                      cs.score >= 85
-                        ? "bg-emerald-400"
-                        : cs.score >= 70
-                        ? "bg-amber-400"
-                        : "bg-red-400"
-                    }`}
-                    style={{ width: `${cs.score}%` }}
-                  />
-                </div>
-                <p className="text-xs text-gray-400 mt-1.5">
-                  {cs.passed}✓ {cs.failed > 0 ? `${cs.failed}✗` : ""}{" "}
-                  {cs.warnings > 0 ? `${cs.warnings}⚠` : ""}
-                  {cs.humanReview > 0 ? ` ${cs.humanReview}🔍` : ""}
-                </p>
-              </button>
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle size={16} className="text-amber-600" />
+            <h3 className="text-sm font-bold text-gray-800">
+              Top {result.topRecommendations.length} Fixes Before QA
+            </h3>
+            <span className="text-xs text-gray-400">— sorted by severity and impact</span>
+          </div>
+          <div className="space-y-2">
+            {result.topRecommendations.map((f, i) => (
+              <FindingCard key={`top-${f.id}-${i}`} finding={f} defaultOpen />
             ))}
           </div>
+          {fullIssues.length > result.topRecommendations.length && (
+            <p className="text-xs text-gray-400 mt-2 text-center">
+              +{fullIssues.length - result.topRecommendations.length} more issues in full details below
+            </p>
+          )}
+        </div>
+      )}
+
+      {result.topRecommendations.length === 0 && result.findings.filter(f => f.status !== "pass").length === 0 && (
+        <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-4 text-center text-sm text-emerald-700">
+          <strong>No automated issues found!</strong> Review the human-review checklist below before QA handoff.
         </div>
       )}
 
       {/* Export buttons */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={copyMarkdown}
-          className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-        >
+      <div className="flex flex-wrap gap-2 items-center">
+        <button onClick={copyMarkdown} className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
           {copiedMd ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
           {copiedMd ? "Copied!" : "Copy Markdown"}
         </button>
-        <button
-          onClick={downloadJson}
-          className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-        >
+        <button onClick={downloadJson} className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
           <Download size={14} />
-          Download JSON
+          JSON
         </button>
-        <button
-          onClick={downloadCsv}
-          className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-        >
+        <button onClick={downloadCsv} className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
           <Download size={14} />
-          Download CSV
+          CSV
         </button>
-        <button
-          onClick={onReset}
-          className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors ml-auto"
-        >
+        <button onClick={onReset} className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors ml-auto">
           <RefreshCw size={14} />
           New Scan
         </button>
       </div>
 
-      {/* Findings */}
-      <div>
-        {/* Filter bar */}
-        <div className="flex flex-wrap items-center gap-2 mb-4">
-          <div className="flex rounded-lg border border-gray-200 bg-white overflow-hidden text-sm">
-            {(["all", "issues", "review"] as FilterMode[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => setFilter(m)}
-                className={`px-3 py-1.5 font-medium transition-colors ${
-                  filter === m
-                    ? "bg-amber-700 text-white"
-                    : "text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                {m === "all" ? "All" : m === "issues" ? "Issues" : "Human Review"}
-              </button>
+      {/* HUMAN REVIEW section */}
+      {result.humanReviewItems.length > 0 && (
+        <details className="rounded-xl border border-purple-100 bg-purple-50/40">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-purple-800 hover:bg-purple-50 rounded-xl select-none flex items-center gap-2">
+            <Eye size={14} />
+            Human Review Checklist ({result.humanReviewItems.length} items)
+            <span className="text-xs font-normal text-purple-500 ml-1">— these do not affect your score</span>
+          </summary>
+          <div className="px-4 pb-4 space-y-2">
+            {result.humanReviewItems.map((f, i) => (
+              <FindingCard key={`hr-${f.id}-${i}`} finding={f} />
             ))}
           </div>
-          {activeCategory !== "all" && (
-            <button
-              onClick={() => setActiveCategory("all")}
-              className="text-xs text-amber-700 hover:underline"
-            >
-              ✕ Clear category filter
-            </button>
-          )}
-          <span className="text-xs text-gray-400 ml-auto">
-            {visible.length} finding{visible.length !== 1 ? "s" : ""}
-          </span>
-        </div>
+        </details>
+      )}
 
-        {visible.length === 0 ? (
-          <div className="rounded-xl border border-gray-100 bg-white p-8 text-center text-gray-400 text-sm">
-            No findings in this filter view.
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {visible.map((f, i) => (
-              <FindingCard key={`${f.id}-${i}`} finding={f} />
-            ))}
+      {/* FULL DETAILS (collapsed) */}
+      <div className="rounded-xl border border-gray-100 overflow-hidden">
+        <button
+          onClick={() => setShowFullDetails((v) => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors bg-white"
+        >
+          <span>
+            View full scan details — all {result.findings.length + result.humanReviewItems.length} findings
+          </span>
+          {showFullDetails ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+
+        {showFullDetails && (
+          <div className="bg-gray-50/50 border-t border-gray-100 p-4 space-y-4">
+            {/* Category score grid */}
+            {result.categoryScores.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Category Breakdown</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {result.categoryScores.map((cs) => (
+                    <button
+                      key={cs.category}
+                      onClick={() =>
+                        setActiveCategory((c) => (c === cs.category ? "all" : cs.category))
+                      }
+                      className={`rounded-lg border p-2.5 text-left hover:shadow-sm transition-all ${
+                        activeCategory === cs.category
+                          ? "border-amber-400 bg-amber-50"
+                          : "border-gray-200 bg-white"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-semibold text-gray-700 leading-tight">
+                          {cs.category}
+                        </span>
+                        <span
+                          className={`text-sm font-bold tabular-nums ${
+                            cs.score >= 85 ? "text-emerald-600" : cs.score >= 70 ? "text-amber-600" : "text-red-600"
+                          }`}
+                        >
+                          {cs.score}
+                        </span>
+                      </div>
+                      <div className="h-1 rounded-full bg-gray-100 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${
+                            cs.score >= 85 ? "bg-emerald-400" : cs.score >= 70 ? "bg-amber-400" : "bg-red-400"
+                          }`}
+                          style={{ width: `${cs.score}%` }}
+                        />
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {cs.passed}✓ {cs.failed > 0 ? `${cs.failed}✗` : ""}{" "}
+                        {cs.warnings > 0 ? `${cs.warnings}⚠` : ""}
+                        {cs.humanReview > 0 ? ` ${cs.humanReview}🔍` : ""}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+                {activeCategory !== "all" && (
+                  <button
+                    onClick={() => setActiveCategory("all")}
+                    className="text-xs text-amber-700 hover:underline mt-2"
+                  >
+                    ✕ Clear category filter
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* All findings */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                All Findings{activeCategory !== "all" ? ` — ${activeCategory}` : ""} ({getFullDetailsFindings().length})
+              </p>
+              <div className="space-y-2">
+                {getFullDetailsFindings().map((f, i) => (
+                  <FindingCard key={`full-${f.id}-${i}`} finding={f} />
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -289,9 +318,7 @@ export function AuditResults({ result, onReset }: Props) {
                   {p.url}
                 </a>
                 {p.title && (
-                  <span className="text-xs text-gray-400 truncate hidden sm:block">
-                    — {p.title}
-                  </span>
+                  <span className="text-xs text-gray-400 truncate hidden sm:block">— {p.title}</span>
                 )}
               </div>
             ))}
@@ -306,15 +333,30 @@ function SummaryCount({
   label,
   count,
   color,
+  note,
 }: {
   label: string;
   count: number;
   color: string;
+  note?: string;
 }) {
   return (
     <div className={`rounded-lg px-3 py-2 ${color}`}>
       <p className="text-lg font-bold tabular-nums">{count}</p>
       <p className="text-xs font-medium opacity-80">{label}</p>
+      {note && <p className="text-xs opacity-60">{note}</p>}
     </div>
+  );
+}
+
+function Tag({ label, color }: { label: string; color: "blue" | "gray" }) {
+  const cls =
+    color === "blue"
+      ? "bg-blue-50 border-blue-200 text-blue-700"
+      : "bg-gray-100 border-gray-200 text-gray-600";
+  return (
+    <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>
+      {label}
+    </span>
   );
 }
